@@ -118,9 +118,13 @@ article's grid-search results.
 
 ## Known gaps (not implemented in this repo)
 
-The article's blood-concentration curve fitting, the eta boundary-scaling regression, and the
-MRI noise estimation are not implemented here (see `blood.py` note above). Mesh generation,
-DTI processing, and MRI-based concentration estimation are also external, and live in the
-upstream preprocessing repository referenced in Setup above, `gMRI2FEM`
-(branch `boundary-cell-refinement`).
+Note the merged branch was named `mri-measurement-error`, but that refers to the MRI-based
+loss/error machinery (`mri_loss.py`'s voxel-evaluation matrix, the `*_convergence.py` scripts
+comparing simulated vs. MRI error) — which *is* now present here. It is **not** the same as the
+article's "Data noise estimates" section. The following are still not implemented in this repo:
+the blood-concentration curve fitting (see `blood.py` note above), the eta boundary-scaling
+regression, and the white-matter-ROI image-noise estimation. Mesh generation, DTI processing,
+and MRI-based concentration estimation are also external, and live in the upstream
+preprocessing repository referenced in Setup above, `gMRI2FEM` (branch
+`boundary-cell-refinement`).
 
