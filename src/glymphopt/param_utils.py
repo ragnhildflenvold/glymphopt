@@ -113,7 +113,7 @@ def param_set_reduction(
     return out
 
 
-def param_dict_to_options(params, prefix="-"):
+def param_dict_to_options(params, prefix="--"):
     return " ".join([f"{prefix}{key} {val}" for key, val in params.items()])
 
 

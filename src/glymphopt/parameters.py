@@ -1,5 +1,4 @@
 import numbers
-import ufl
 from typing import Any
 
 import pint
@@ -18,55 +17,21 @@ DEFAULT_PARAMETERS = {
     "n": {  # Volume fractions
         "e": 20 * percent,
         "p": 2 * percent,
-        "b": 4 * percent,
-        "sas": 80 * percent,
     },
     "D": {  # Diffusion coefficients
         "e": 1.3e-4 * mm**2 / s,
     },
-    "gamma": (3.0 * dimless),  # Factor of enhanced diffusion in PVS
-    "rho": 0.113 * dimless,  # Ratio of free diffusion of gadobutrol to water
-    "r": {"b": 1e-3 * 1 / s},  # Decay rate
     "t": {  # Transfer coefficient (permeability * area-volume ratio)
         "ep": 2.9e-2 * 1 / s,
         "pb": 2.0e-6 * 1 / s,
     },
     "k": {  # Surface membrane conductivity
-        "e": 1e-5 * mm / s,
+        "e": 1.0e-5 * mm / s,
         "p": 3.7e-4 * mm / s,
     },
-    "beta": (1.71 * dimless),  # Ratio between blood volume and brain volume ()
-}
-DEFAULT_PARAMETERS = {
-    "n": {  # Volume fractions
-        "e": 20 * percent,
-        "p": 2 * percent,
-        "b": 4 * percent,
-        "sas": 80 * percent,
-    },
-    "D": {  # Diffusion coefficients
-        "e": 1.3e-4 * mm**2 / s,
-    },
-    "gamma": (3.0 * dimless),  # Factor of enhanced diffusion in PVS
+    "gamma": (20.0 * dimless),  # Factor of enhanced diffusion in PVS
     "rho": 0.113 * dimless,  # Ratio of free diffusion of gadobutrol to water
-    "r": {"b": 1e-3 * 1 / s},  # Decay rate
-    "t": {  # Transfer coefficient (permeability * area-volume ratio)
-        "ep": 2.9e-2 * 1 / s,
-        "pb": 2.0e-6 * 1 / s,
-    },
-    "k": {  # Surface membrane conductivity
-        "e": 1e-5 * mm / s,
-        "p": 3.7e-4 * mm / s,
-    },
-    "beta": (1.71 * dimless),  # Ratio between blood volume and brain volume ()
-}
-DEFAULT_UNITS = {
-    "n": "",
-    "D": "mm**2 / s",
-    "t": "1 / s",
-    "r": "1 / s",
-    "beta": "",
-    "k": "mm / s",
+    "eta": 0.39 * dimless,
 }
 
 
@@ -78,51 +43,50 @@ def get_default_parameters():
     return {**DEFAULT_PARAMETERS}
 
 
-def unpack(p, *args):
-    return tuple(p[i] for i in args)
-
-
-def consume(p, *args):
-    return tuple(p.pop(i) for i in args)
-
-
 def get_dimless_parameters(T: pint.Quantity, X: pint.Quantity):
     default = get_default_parameters()
-    n, D, pi, r, k, beta, gamma, rho = unpack(
-        default, "n", "D", "t", "r", "k", "beta", "gamma", "rho"
-    )
+    n = default["n"]
+    D = default["D"]
+    t = default["t"]
+    k = default["k"]
+    gamma = default["gamma"]
+    rho = default["rho"]
+    eta = default["eta"]
     return {
         "n": {i: (ni).to("") for i, ni in n.items()},
         "D": {i: (T / X**2 * Di).to("") for i, Di in D.items()},
-        "t": {ij: (T * pi_ij).to("") for ij, pi_ij in pi.items()},
-        "r": {i: (T * ri).to("") for i, ri in r.items()},
+        "t": {ij: (T * t).to("") for ij, t in t.items()},
         "k": {i: (T / X * ki).to("") for i, ki in k.items()},
-        "beta": beta,
         "gamma": gamma,
         "rho": rho,
+        "eta": eta,
     }
 
 
-def singlecomp_parameters(threecomp_parameters=None):
-    threecomp_parameters = threecomp_parameters or get_default_parameters()
-    params = flatten_dict(threecomp_parameters)
-    (
-        n_e,
-        n_p,
-        n_sas,
-        k_e,
-        k_p,
-        t_pb,
-        gamma,
-        rho,
-    ) = consume(params, "n_e", "n_p", "n_sas", "k_e", "k_p", "t_pb", "gamma", "rho")
+def default_twocomp_parameters(T: pint.Quantity = 1 * s, X: pint.Quantity = 1 * mm):
+    default_parameters = remove_units(get_dimless_parameters(T, X))
+    return flatten_dict(default_parameters)
+
+
+def singlecomp_parameters(twocomp_parameters=None):
+    twocomp_parameters = twocomp_parameters or default_twocomp_parameters()
+    params = flatten_dict(twocomp_parameters)
+    n_e = params["n_e"]
+    n_p = params["n_p"]
+    k_e = params["k_e"]
+    k_p = params["k_p"]
+    t_pb = params["t_pb"]
+    gamma = params["gamma"]
+    rho = params["rho"]
+    eta = params["eta"]
     phi = n_e + n_p
     return {
-        "a": rho * (n_e + gamma * n_p) / phi,
+        "a": (n_e + gamma * n_p) / phi,
         "r": t_pb / phi,
         "k": (k_e + k_p) / phi,
         "phi": phi,
-        "phi_sas": n_sas,
+        "eta": eta,
+        "rho": rho,
     }
 
 
@@ -165,16 +129,12 @@ def is_quantity(x: Any) -> bool:
     return isinstance(x, pint.Quantity) or isinstance(x, numbers.Complex)
 
 
-def parameters_2d_default() -> dict[str, float | ufl.Coefficient]:
-    return {
-        "a": 2.0,
-        "phi": 0.22,
-        "D_": 0.0002,
-        "r": 2e-6,
-        "k": 0.02,
-        "rho": 0.123,
-        "eta": 0.4,
-    }
+def unpack(p, *args):
+    return tuple(p[i] for i in args)
+
+
+def consume(p, *args):
+    return tuple(p.pop(i) for i in args)
 
 
 if __name__ == "__main__":

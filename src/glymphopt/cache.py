@@ -1,4 +1,3 @@
-from types import NoneType
 from typing import Any, Callable, Generic, TypeVar, Optional
 import numpy as np
 
@@ -12,7 +11,7 @@ class CacheObject(Generic[T]):
 
 
 def cache_fetch[T](
-    cache: CacheObject,
+    cache: CacheObject[T],
     func: Callable[..., T],
     cache_kwargs: dict[str, Any],
     **funkwargs: Any,
@@ -23,11 +22,8 @@ def cache_fetch[T](
             for key, val in cache_kwargs.items()
         ]
     )
-    if is_old_kwargs:
-        val = cache.val
-    else:
-        fval = func(**funkwargs)
-        cache.val = fval
+    if (not is_old_kwargs) or (cache.val is None):
+        cache.val = func(**funkwargs)
         for key, val in cache_kwargs.items():
             cache.lastx[key] = val
     return cache.val

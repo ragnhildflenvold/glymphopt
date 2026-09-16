@@ -1,7 +1,9 @@
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyvista as pv
+import pandas as pd
 
 
 def dolfin_mesh_to_pyvista_ugrid(mesh):
@@ -15,7 +17,7 @@ def dolfin_mesh_to_pyvista_ugrid(mesh):
     )
 
 
-def with_suffix(p: Path, newsuffix: str) -> Path:
+def with_suffix(p: Path | str, newsuffix: str) -> Path:
     p = Path(p)
     return p.parent / f"{p.name.split('.')[0]}{newsuffix}"
 
@@ -37,3 +39,18 @@ def flatten_dict(nested_dict, start=0):
         else:
             result[key] = value
     return result
+
+
+def parse_evaluation(evaluation, coeffconverter):
+    return {
+        **{
+            key: evaluation
+            for key, evaluation in zip(coeffconverter.vars, evaluation["point"])
+        },
+        "funceval": evaluation["value"],
+    }
+
+
+def prepend_info(df: pd.DataFrame, column_name: str, info: Any) -> pd.DataFrame:
+    df[column_name] = info
+    return df[[df.columns[-1], *df.columns[:-1]]]

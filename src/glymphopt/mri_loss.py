@@ -30,6 +30,12 @@ def numpy_array_to_dolfin_vector(v):
     return vec
 
 
+def numpy_array_to_petsc_vector(v):
+    petsc_vec = df.PETScVector(df.MPI.comm_world)
+    petsc_vec.init(len(v))
+    petsc_vec.set_local(v)
+
+
 def create_evaluation_matrix(
     V,
     data_mris,

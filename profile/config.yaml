@@ -1,0 +1,17 @@
+use-singularity: True
+jobs: 50
+jobname: "{rule}_jobid={jobid}"
+singularity-args: " --cwd /app -B mri_dataset:/app/mri_dataset,mri_processed_data:/app/mri_processed_data,results:/app/results,$HOME/.cache:/app/.pixi/envs/default/.cache"
+executor: cluster-generic
+cluster-generic-cancel-cmd: "scancel"
+cluster-generic-submit-cmd: 
+  sbatch 
+    --partition={resources.partition}
+    --cpus-per-task={resources.cpus_per_task}
+    --time={resources.time}
+    --output="jobs/%x.log"
+default-resources:
+  - partition='genoaxq,milanq,defq,fpgaq'
+  - cpus_per_task=8
+  - time='2:00:00'
+  - mem_mb=16000

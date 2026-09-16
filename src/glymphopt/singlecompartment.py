@@ -1,21 +1,39 @@
-import click
 import numpy as np
 import dolfin as df
 import tqdm
-
 from dolfin import inner, grad
-
 
 from glymphopt.cache import CacheObject, cache_fetch
 from glymphopt.datageneration import BoundaryConcentration
-
-from glymphopt.io import read_mesh, read_function_data
+from glymphopt.measure import LossFunction, measure, measure_interval
 from glymphopt.operators import (
     matrix_operator,
     bilinear_operator,
     matmul,
 )
 from glymphopt.timestepper import TimeStepper
+
+
+class SingleCompartmentModel:
+    def __init__(self, V, D, g):
+        domain = V.mesh()
+        dx = df.Measure("dx", domain)
+        ds = df.Measure("ds", domain)
+
+        u, v = df.TrialFunction(V), df.TestFunction(V)
+        self.M_ = df.assemble(inner(u, v) * dx)
+        self.DK = df.assemble(inner(D * grad(u), grad(v)) * dx)
+        self.S = df.assemble(inner(u, v) * ds)
+        self.g = g or BoundaryConcentration(V)
+
+    def M(self, coefficients) -> df.Matrix:
+        return self.M_
+
+    def L(self, coefficients) -> df.Matrix:
+        a = coefficients["a"]
+        r = coefficients["r"]
+        k = coefficients["k"]
+        return a * self.DK + r * self.M_ + k * self.S
 
 
 class SingleCompartmentInverseProblem:
@@ -27,6 +45,7 @@ class SingleCompartmentInverseProblem:
         g,
         D,
         dt=3600,
+        solver_type="direct",
         timescale=1.0,
         progress=True,
     ):
@@ -39,13 +58,8 @@ class SingleCompartmentInverseProblem:
         t_end = N * dt
         self.timestepper = TimeStepper(dt, (t_start, t_end))
 
-        coefficients = coefficientvector.coefficients
-
         self.V = self.Yd[0].function_space()
-        g = g
-        D = D
-
-        self.model = Model(self.V, g=g, D=D)
+        self.model = SingleCompartmentModel(self.V, g=g, D=D)
         self.cache = {
             "state": CacheObject(),
             "adjoint": CacheObject(),
@@ -53,36 +67,23 @@ class SingleCompartmentInverseProblem:
             "sensitivity": CacheObject(),
             "operator": CacheObject(),
         }
+        self.solver_type = solver_type
 
-        _M_ = bilinear_operator(self.model.M)
-        self.Yd_norms = [_M_(yi.vector(), yi.vector()) for yi in self.Yd]
         self.coefficients = coefficientvector
+        _M_ = bilinear_operator(self.model.M("_"))
+        self.Yd_norms = [_M_(yi.vector(), yi.vector()) for yi in self.Yd]
+        self.loss = LossFunction(td, Yd)
 
     def measure(self, Y: list[df.Function]) -> list[df.Function]:
-        Ym = [df.Function(self.V, name="measured_state") for _ in range(len(self.td))]
-        find_intervals = self.timestepper.find_intervals(self.td)
-        for i, _ in enumerate(self.td[1:], start=1):
-            ni = find_intervals[i]
-            Ym[i].assign(Y[ni + 1])
-        return Ym
+        return measure(self.timestepper, Y, self.td)
 
     def F(self, x):
         Y = cache_fetch(self.cache["state"], self.forward, {"x": x}, x=x)
         Ym = self.measure(Y)
-        _M_ = bilinear_operator(self.model.M)
-        timepoint_errors = [
-            _M_(Ym_i.vector() - Yd_i.vector(), Ym_i.vector() - Yd_i.vector()) / norm_i
-            for Ym_i, Yd_i, norm_i in zip(Ym[1:], self.Yd[1:], self.Yd_norms[1:])
-        ]
-        J = 0.5 * sum(timepoint_errors)
-        return J
+        return self.loss(Ym)
 
     def forward(self, x):
         coefficients = self.coefficients.from_vector(x)
-        a = coefficients["a"]
-        r = coefficients["r"]
-        k = coefficients["k"]
-        eta = coefficients["eta"]
 
         timestepper = self.timestepper
         dt = timestepper.dt
@@ -91,23 +92,47 @@ class SingleCompartmentInverseProblem:
         Y[0].assign(self.Yd[0])
 
         model = self.model
-        M = model.M
-        L = a * model.DK + r * model.M + k * model.S
-        G = cache_fetch(self.cache["g"], self.boundary_vectors, {"eta": eta}, eta=eta)
-        solver = cache_fetch(
-            self.cache["operator"], df.LUSolver, {"x": x}, A=M + dt * L
-        )
-        Mdot = matrix_operator(M)
+        M = model.M(coefficients)
+        L = model.L(coefficients)
+        G = cache_fetch(self.cache["g"], self.boundary_vectors, {"x": x}, x=x)
+
+        if self.solver_type == "direct":
+            solver = cache_fetch(
+                self.cache["operator"],
+                df.LUSolver,
+                {"x": x, "solver": self.solver_type},
+                A=M + (0.5 * dt) * L,  # Crank-Nicolson
+                # A=M + dt * L, # Implicit Euler
+            )
+        else:
+            solver = cache_fetch(
+                self.cache["operator"],
+                df.KrylovSolver,
+                {"x": x, "solver": self.solver_type},
+                A=M + (0.5 * dt) * L,  # Crank-Nicolson
+                method="cg",
+                preconditioner="jacobi",
+            )
+        Mdot = matrix_operator(M - (0.5 * dt) * L)  # Crank-Nicolson
+        # Mdot = matrix_operator(M)  # Implicit Euler
 
         N = self.timestepper.num_intervals()
         for n in tqdm.tqdm(range(N), total=N, disable=self.silent):
-            solver.solve(Y[n + 1].vector(), Mdot(Y[n].vector()) + dt * k * G[n + 1])
+            solver.solve(
+                Y[n + 1].vector(),
+                Mdot(Y[n].vector()) + 0.5 * dt * (G[n] + G[n + 1]),  # Crank-Nicolson
+                # Mdot(Y[n].vector()) + (dt) * G[n + 1],  # Implicit-Euler
+            )
         return Y
 
-    def boundary_vectors(self, eta):
+    def boundary_vectors(self, x):
+        coefficients = self.coefficients.from_vector(x)
+        eta = coefficients["eta"]
+        k = coefficients["k"]
+
         model = self.model
         timestepper = self.timestepper
-        return [eta * matmul(model.S, model.g(t)) for t in timestepper.vector()]
+        return [k * eta * matmul(model.S, model.g(t)) for t in timestepper.vector()]
 
     def gradF(self, x):
         coefficients = self.coefficients.from_vector(x)
@@ -161,7 +186,7 @@ class SingleCompartmentInverseProblem:
             nj = measure_interval(n, self.td, self.timestepper)
             jump = sum(
                 (
-                    matmul(M, (Ym[j].vector() - Yd[j].vector()) / self.Yd_norms[j])
+                    matmul(M, (Ym[j].vector() - self.Yd[j].vector()) / self.Yd_norms[j])
                     for j in nj
                 )
             )
@@ -173,8 +198,6 @@ class SingleCompartmentInverseProblem:
         return P
 
     def dF(self, x, dx):
-        timestepper = self.timestepper
-
         Y = cache_fetch(self.cache["state"], self.forward, {"x": x}, x=x)
         dY = cache_fetch(
             self.cache["sensitivity"],
@@ -238,6 +261,7 @@ class SingleCompartmentInverseProblem:
         )
 
     def sensitivity(self, x, dx, Y) -> list[df.Function]:
+        raise NotImplementedError("Need update following refactor.")
         coefficients = self.coefficients.from_vector(x)
         a = coefficients["a"]
         r = coefficients["r"]
@@ -308,27 +332,3 @@ class SingleCompartmentInverseProblem:
                 Mdot(dP[n].vector()) - dt * dLdot(P[n - 1].vector()) - jump,
             )
         return dP
-
-
-class Model:
-    def __init__(self, V, D=None, g=None):
-        D = D or df.Identity(V.mesh().topology().dim())
-
-        domain = V.mesh()
-        dx = df.Measure("dx", domain)
-        ds = df.Measure("ds", domain)
-
-        u, v = df.TrialFunction(V), df.TestFunction(V)
-        self.M = df.assemble(inner(u, v) * dx)
-        self.DK = df.assemble(inner(D * grad(u), grad(v)) * dx)
-        self.S = df.assemble(inner(u, v) * ds)
-        self.g = g or BoundaryConcentration(V)
-
-
-def gradient_sensitivities(F, x, **kwargs):
-    return np.array([F(x, ei, **kwargs) for ei in np.eye(len(x))])
-
-
-def measure_interval(n: int, td: np.ndarray, timestepper: TimeStepper):
-    bins = np.digitize(td, timestepper.vector(), right=True)
-    return list(np.where(n == bins)[0])

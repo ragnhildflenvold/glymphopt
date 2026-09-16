@@ -20,15 +20,19 @@ def measure(
     V = states[0].function_space()
     Y = [df.Function(V, name="measured_state") for _ in range(len(measure_times))]
     find_intervals = timesteps.find_intervals(measure_times)
-    for i, _ in enumerate(measure_times[1:], start=1):
+    dt = timesteps.dt
+    time = timesteps.vector()
+    for i, ti in enumerate(measure_times[1:], start=1):
         ni = find_intervals[i]
+
         # Use stepwise solution, as it is not necessarily straight forward to use
         # the linear interpolant between timepoints.
         # print(i, ni, time[ni], ti, time[ni + 1])
-        Y[i].assign(states[ni + 1])
+        # Y[i].assign(states[ni + 1])
+
         # Need to rederive this expression if I want to use linear interpolant
-        # step_fraction = (ti - time[ni]) / dt
-        # Y[i].assign(((1 - step_fraction) * states[ni] + step_fraction * states[ni + 1]))
+        step_fraction = (ti - time[ni]) / dt
+        Y[i].assign(((1 - step_fraction) * states[ni] + step_fraction * states[ni + 1]))
     return Y
 
 
@@ -49,14 +53,6 @@ class LossFunction:
         ]
         return 0.5 * sum(timepoint_errors)
 
-    def measure(self, timesteps, Y, td, measure_op):
-        Y = [df.Function(self.V, name="measured_state") for _ in range(len(td))]
-        find_intervals = timesteps.find_intervals(self.td)
-        for i, _ in enumerate(td[1:], start=1):
-            ni = find_intervals[i]
-            Y[i].assign(measure_op(Y[ni + 1]))
-        return Y
-
 
 class MRILoss:
     def __init__(self, evaluation_data):
@@ -74,7 +70,7 @@ class MRILoss:
         self.M = sparse_matrix_to_dolfin(M)
         self.Cd = [numpy_array_to_dolfin_vector(cdi) for cdi in Cd[1:]]
         self.M_ = [matrix_operator(self.M) for _ in range(4)]
-        self.norm = [np.sum(ci**2) for ci in Cd[1:]]
+        self.norm = [ci.dot(ci) for ci in Cd[1:]]
 
     def __call__(self, Ym):
         errs = (

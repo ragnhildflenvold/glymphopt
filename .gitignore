@@ -1,5 +1,12 @@
+
+
+
 .snakemake
 results/
+resources/
+!resources/concentrations.hdf
+mri_dataset
+mri_processed_data
 
 # pixi environments
 .pixi

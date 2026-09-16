@@ -7,12 +7,36 @@ match simulated tracer concentrations to MRI-derived concentration estimates. Th
 pipeline behind the grid-search results (gamma/t_pb, alpha/r) reported in the two-compartment
 gadolinium transport article.
 
-> **Note:** the locally checked-out `main` branch appears to lag behind the remote
-> `mri-measurement-error` branch (10 commits ahead, not checked out here), which contains
-> additional convergence-study scripts (`singlecompartment_convergence.py`,
-> `twocompartment_convergence.py`) and a default `eta=0.39` matching the article exactly
-> (vs. `eta=0.4` hardcoded in this branch's scripts). Check which branch/commit produced the
-> final article numbers before relying on `main` alone.
+## Setup
+
+```bash
+mkdir -p deps/
+git clone -b boundary-cell-refinement \
+  git@github.com:jorgenriseth/gMRI2FEM.git deps/gmri2fem
+pixi install
+```
+
+To copy necessary input files from another source, without interfering with everyone elses work:
+- Start by creating a `subjects.txt`-file listing the subjects of the study.
+- Copy all necessary files from the source directory:
+```bash
+export SOURCEDIR=[full path to directory where mri_dataset and mri_processed_data is located]
+./copy-deps.sh
+```
+
+If on a cluster with slurm execution, you need to create output directories first.
+```bash
+mkdir jobs logs
+```
+Pull the singularity container:
+```bash
+singularity build glymphopt.sif jorgenriseth/glymphopt
+```
+or build locally with the help of docker,
+```bash
+docker build -t glymphopt .;
+apptainer build glymphopt.sif docker-daemon:glymphopt:latest
+```
 
 ## Pipeline overview
 
@@ -32,7 +56,8 @@ Orchestrated per-subject via the `Snakefile` (subjects listed in `subjects.txt`)
 
 | Module | Purpose |
 |---|---|
-| `minimize.py` | Adaptive grid search (`adaptive_grid_search`) and a box-constrained Newton solver — the core optimization algorithm. |
+| `minimize.py` | Box-constrained Newton solver, plus the original `adaptive_grid_search` implementation. |
+| `grid_scheduler.py`, `minimize_grid_search.py` | Refactored, stateless adaptive grid search (`GridScheduler` + `adaptive_grid_search`) used by the current grid-search scripts. |
 | `measure.py` | Normalized L2 loss functions (`LossFunction`, `MRILoss`) comparing simulated and measured concentrations. |
 | `mri_loss.py` | Builds the sparse mesh-to-MRI-voxel evaluation matrix used by `MRILoss`. |
 | `twocompartment.py` | Two-compartment (ECS+PVS) forward/inverse PDE problem (`TwocompartmentModel`, `MulticompartmentInverseProblem`). |
@@ -59,9 +84,15 @@ Orchestrated per-subject via the `Snakefile` (subjects listed in `subjects.txt`)
 |---|---|
 | `diffusion_reaction_gridsearch.py`, `twocomp_gridsearch.py` | Core adaptive grid search per subject; outputs the parameter/loss CSVs. |
 | `singlecompartment.py`, `twocompartment.py` | Forward solve at given (typically optimal) parameters. |
+| `singlecompartment_convergence.py`, `twocompartment_convergence.py` | Numerical convergence study (varying timestep/mesh resolution), tracking total tracer amount and measurement-time error — produces the article's convergence figure. |
+| `singlecompartment_eval_point.py`, `twocompartment_eval_point.py` | Evaluate the loss at a single given parameter point (used for cluster-parallelized grid search). |
+| `collect_grid_value.py`, `collect_mesh_data.py` | Collect per-point evaluations / per-subject mesh+data bundles produced by cluster jobs into a single file. |
+| `voxel_center_minimization.py` | Builds the mesh-to-MRI-voxel evaluation matrix and reconstructs mesh functions from MRI voxel data (`create_evaluation_matrix`, `map_mri_to_mesh`). |
+| `extract_timestamps.py` | Reads acquisition timestamps for a subject/sequence from the study timetable (via the external `gmri2fem` package). |
 | `create_errortable.py` | Region-wise comparison table between data, single-, and two-compartment results. |
 | `diffusion_reaction_minimization.py` | Alternative L-BFGS-B-based optimization; incomplete/exploratory, not used in the Snakemake pipeline. |
 | `datageneration2d.py` | Generates synthetic 2D test data; not part of the subject pipeline. |
+| `test_script_evaluate.py` | Toy loss function (distance to a fixed optimum) for testing the grid-search/cluster-scheduling machinery. |
 
 ## Notebooks & sandbox
 
@@ -69,6 +100,13 @@ Orchestrated per-subject via the `Snakefile` (subjects listed in `subjects.txt`)
 are exploratory/development notebooks used to prototype the inverse problems; the production
 path is the scripts above. `sandbox/dolfin-adjoint.py` is an old dolfin-adjoint-based
 experiment, not used elsewhere.
+
+## Cluster execution
+
+`profile/config.yaml` configures Snakemake for Slurm execution via Singularity
+(`grid_scheduler.py`/`*_eval_point.py` scripts support splitting one grid-search iteration across
+cluster jobs). `Dockerfile`, `copy-deps.sh`, `depfiles.txt`, and `snakebatch.sh` support building
+the container and staging input data for cluster runs.
 
 ## Relationship to `threecomp`
 
@@ -82,6 +120,7 @@ article's grid-search results.
 
 The article's blood-concentration curve fitting, the eta boundary-scaling regression, and the
 MRI noise estimation are not implemented here (see `blood.py` note above). Mesh generation,
-DTI processing, and MRI-based concentration estimation are also external. These likely live in
-the upstream preprocessing repository referenced by this project's setup instructions,
-`gMRI2FEM` (branch `boundary-cell-refinement`).
+DTI processing, and MRI-based concentration estimation are also external, and live in the
+upstream preprocessing repository referenced in Setup above, `gMRI2FEM`
+(branch `boundary-cell-refinement`).
+

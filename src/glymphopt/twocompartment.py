@@ -1,31 +1,26 @@
-import numpy as np
 import dolfin as df
+import numpy as np
 import tqdm
 
-
+from glymphopt.assigners import SuperspaceAssigner, VolumetricConcentration
 from glymphopt.cache import CacheObject, cache_fetch
-
-from glymphopt.operators import (
-    matrix_operator,
-    bilinear_operator,
-    matmul,
-    mass_matrix,
-    diffusion_operator_matrices,
-    transfer_matrix,
-    boundary_mass_matrices,
-    mass_matrices,
-)
-
-from glymphopt.timestepper import TimeStepper
-from glymphopt.assigners import VolumetricConcentration, SuperspaceAssigner
 from glymphopt.measure import LossFunction
+from glymphopt.operators import (
+    bilinear_operator,
+    boundary_mass_matrices,
+    diffusion_operator_matrices,
+    mass_matrices,
+    matmul,
+    matrix_operator,
+    transfer_matrix,
+)
+from glymphopt.timestepper import TimeStepper
 
 
 class TwocompartmentModel:
     def __init__(self, W, D, g):
         self.W = W
         self.Me, self.Mp = mass_matrices(W)
-        self.D = D
         self.DKe, self.DKp = diffusion_operator_matrices(D, W)
         self.Se, self.Sp = boundary_mass_matrices(W)
         self.T = transfer_matrix(W)
@@ -44,7 +39,6 @@ class TwocompartmentModel:
         k_e = coefficients["k_e"]
         k_p = coefficients["k_p"]
         gamma = coefficients["gamma"]
-        Me = self.Me
         Mp = self.Mp
         DKe = self.DKe
         DKp = self.DKp
@@ -64,7 +58,15 @@ class TwocompartmentModel:
 
 class MulticompartmentInverseProblem:
     def __init__(
-        self, td, Yd, coefficientvector, g, D, dt=3600, timescale=1.0, progress=True
+        self,
+        td,
+        Yd,
+        coefficientvector,
+        g,
+        D,
+        dt=3600,
+        timescale=1.0,
+        progress=True,
     ):
         self.silent = not progress
         self.td, self.Yd = td, Yd
@@ -75,12 +77,9 @@ class MulticompartmentInverseProblem:
         t_end = N * dt
         self.timestepper = TimeStepper(dt, (t_start, t_end))
 
-        coefficients = coefficientvector.coefficients
-
         self.V = self.Yd[0].function_space()
-        domain = self.V.mesh()
         self.W = df.FunctionSpace(
-            domain, as_vector_element(self.V.ufl_element(), dim=2)
+            self.V.mesh(), as_vector_element(self.V.ufl_element(), dim=2)
         )
 
         self.model = TwocompartmentModel(self.W, D=D, g=g)
@@ -92,11 +91,10 @@ class MulticompartmentInverseProblem:
             "operator": CacheObject(),
         }
 
-        _M_ = bilinear_operator(mass_matrix(self.V))
-        self.Yd_norms = [_M_(yi.vector(), yi.vector()) for yi in self.Yd]
         self.coefficients = coefficientvector
         self.superassigner = SuperspaceAssigner(self.V, self.W)
 
+        coefficients = coefficientvector.coefficients
         n_e, n_p = coefficients["n_e"], coefficients["n_p"]
         self.volumetric_concentration = VolumetricConcentration(
             (n_e, n_p), self.V, self.W
@@ -108,17 +106,33 @@ class MulticompartmentInverseProblem:
         Ym = self.measure(Y)
         return self.loss(Ym)
 
-    def measure(self, Y):
+    def measure(self, Y, step=False):
         Ym = [df.Function(self.V, name="measured_state") for _ in range(len(self.td))]
+
+        if step:  # Necessary for implicit Euler adjoint.
+            find_intervals = self.timestepper.find_intervals(self.td)
+            for i, _ in enumerate(self.td[1:], start=1):
+                ni = find_intervals[i]
+                Ym[i].assign(self.volumetric_concentration(Y[ni + 1]))
+            return Ym
+
+        Y_before = [df.Function(self.V, name="before") for _ in range(len(self.td))]
+        Y_after = [df.Function(self.V, name="after") for _ in range(len(self.td))]
         find_intervals = self.timestepper.find_intervals(self.td)
-        for i, _ in enumerate(self.td[1:], start=1):
+        dt = self.timestepper.dt
+        time = self.timestepper.vector()
+        for i, ti in enumerate(self.td[1:], start=1):
             ni = find_intervals[i]
-            Ym[i].assign(self.volumetric_concentration(Y[ni + 1]))
+            Y_before[i].assign(self.volumetric_concentration(Y[ni]))
+            Y_after[i].assign(self.volumetric_concentration(Y[ni + 1]))
+            step_fraction = (ti - time[ni]) / dt
+            Ym[i].assign(
+                ((1 - step_fraction) * Y_before[i] + step_fraction * Y_after[i])
+            )
         return Ym
 
     def forward(self, x):
         coefficients = self.coefficients.from_vector(x)
-
         timestepper = self.timestepper
         dt = timestepper.dt
         timepoints = timestepper.vector()
@@ -129,7 +143,7 @@ class MulticompartmentInverseProblem:
         model = self.model
         M = model.M(coefficients)
         L = model.L(coefficients)
-        G = cache_fetch(self.cache["g"], self.boundary_vectors, {"_": ""})
+        G = cache_fetch(self.cache["g"], self.boundary_vectors, {"x": x}, x=x)
         solver = cache_fetch(
             self.cache["operator"],
             df.KrylovSolver,
@@ -144,18 +158,22 @@ class MulticompartmentInverseProblem:
             solver.solve(Y[n + 1].vector(), Mdot(Y[n].vector()) + dt * G[n + 1])
         return Y
 
-    def boundary_vectors(self):
+    def boundary_vectors(self, x):
         model = self.model
         timestepper = self.timestepper
-        k_e = self.coefficients.dict()["k_e"]
-        k_p = self.coefficients.dict()["k_p"]
-        S = k_e * model.Se + k_p * model.Sp
+        coefficients = self.coefficients.from_vector(x)
+        k_e = coefficients["k_e"]
+        k_p = coefficients["k_p"]
+        eta = coefficients["eta"]
+        phi = coefficients["n_e"] + coefficients["n_p"]
+        S = (eta * k_e / phi) * model.Se + (eta * k_p / phi) * model.Sp
         return [
             matmul(S, self.superassigner(model.g.update(t)).vector())
             for t in timestepper.vector()
         ]
 
     def gradF(self, x):
+        return NotImplementedError("Missing adjoint definition for twocompartment")
         coefficients = self.coefficients.from_vector(x)
         phi = coefficients["phi"]
         dt = self.timestepper.dt

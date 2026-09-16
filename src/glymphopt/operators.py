@@ -1,6 +1,8 @@
 import abc
 from typing import Optional, Self
 
+from click import Option
+
 import dolfin as df
 from dolfin import inner, grad, dot
 
@@ -27,6 +29,17 @@ def matmul(M: df.cpp.la.Matrix, x: df.cpp.la.Matrix):
     Mx = df.Vector()
     M.mult(x, Mx)
     return Mx
+
+
+def domain_integral(V: df.FunctionSpace, dx: Optional[df.Measure] = None):
+    dx = dx or df.Measure("dx", domain=V.mesh())
+    v = df.TestFunction(V)
+    m = df.assemble(v * dx)
+
+    def call(x: df.cpp.la.Vector):
+        return m.inner(x)
+
+    return call
 
 
 def matrix_operator(M: df.cpp.la.Matrix):

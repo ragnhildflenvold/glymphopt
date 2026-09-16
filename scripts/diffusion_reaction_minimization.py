@@ -21,9 +21,7 @@ from glymphopt.operators import (
     bilinear_operator,
     matmul,
 )
-from glymphopt.parameters import (
-    parameters_2d_default,
-)
+from glymphopt.parameters import default_twocomp_parameters, singlecomp_parameters
 from glymphopt.scale import create_reduced_problem
 from glymphopt.timestepper import TimeStepper
 
@@ -32,28 +30,18 @@ from glymphopt.timestepper import TimeStepper
 @click.option("--input", "-i", type=str, required=True)
 @click.option("--output", "-o", type=str, required=True)
 def main(input, output):
+    coefficients = singlecomp_parameters(default_twocomp_parameters())
+    coeffconverter = CoefficientVector(coefficients, ("a", "r", "k", "eta"))
+
     domain = read_mesh(input)
     td, Yd = read_function_data(input, domain, "concentration")
     td, Y_bdry = read_function_data(input, domain, "boundary_concentration")
-    coefficients = parameters_2d_default()
-    coeffconverter = CoefficientVector(coefficients, ("a", "r", "k"))
+    g = LinearDataInterpolator(td, Y_bdry, valuescale=1.0)
 
     D = read_augmented_dti(input)
     D.vector()[:] *= coefficients["rho"]
 
-    g = LinearDataInterpolator(td, Y_bdry, valuescale=1.0)
-    coefficients = {
-        "a": 2.0,
-        "phi": 0.22,
-        "r": 1e-6,
-        "k": 1e-2,
-        "rho": 0.123,
-        "eta": 0.4,
-    }
-    coeffconverter = CoefficientVector(coefficients, ("a", "r", "k", "eta"))
     problem = InverseProblem(input, coeffconverter, g=g, D=D, progress=True)
-
-    # results = direct_scaled_minimizer(problem)
     results = iterative_subproblem_optimization(problem, coeffconverter)
     with open(output, "w") as f:
         f.write(json.dumps(results, indent=2))
