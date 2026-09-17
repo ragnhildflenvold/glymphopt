@@ -47,5 +47,6 @@ meshio = ">=5.3.5,<6"
 setuptools = ">=80.9.0,<81"
 notebook = ">=7.4.4,<8"
 jupyter_server = ">=2.16.0,<3"
+pkg-config = ">=0.29.2,<0.30"
 
 [tool.pixi.activation]
