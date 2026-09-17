@@ -29,9 +29,23 @@ def concentration_exists(subject, session):
   concentration = f"mri_processed_data/{subject}/concentrations/{subject}_{session}_concentration.nii.gz"
   return Path(concentration).exists()
 
+##################################
+## Over all rule for testing and debugging
+##################################
+
+rule all:
+    input:
+        # 1. Hovedresultater og feiltabeller
+        expand("results/{subject}_errortable.csv", subject=SUBJECTS),
+        expand("results/{subject}_singlecomp_optimal.hdf", subject=SUBJECTS),
+        expand("results/{subject}_twocomp_optimal.hdf", subject=SUBJECTS),
+        
+        # 2. Slutthistorikk fra adaptiv gridsearch (f.eks. iterasjon 1 eller den du stopper på)
+        expand("results/singlecompartment_gridsearch/{subject}/history1.csv", subject=SUBJECTS),
+        expand("results/twocompartment_gridsearch/{subject}/history1.csv", subject=SUBJECTS)
 
 
-###################################
+#################################
 ## Preprocessing
 ###################################
 rule extract_timestamps:
