@@ -3,6 +3,18 @@
 ########################
 container: "glymphopt.sif"
 
+import os
+os.environ["PATH"] = "/app/.pixi/envs/default/bin:" + os.environ["PATH"]
+
+import os
+
+pixi_env = "/app/.pixi/envs/default"
+os.environ["PATH"] = f"{pixi_env}/bin:" + os.environ.get("PATH", "")
+os.environ["PKG_CONFIG_PATH"] = f"{pixi_env}/lib/pkgconfig:" + os.environ.get("PKG_CONFIG_PATH", "")
+os.environ["CMAKE_PREFIX_PATH"] = f"{pixi_env}:" + os.environ.get("CMAKE_PREFIX_PATH", "")
+
+
+
 if DeploymentMethod.APPTAINER in workflow.deployment_settings.deployment_method:
   shell.prefix(
     "set -eo pipefail; "
