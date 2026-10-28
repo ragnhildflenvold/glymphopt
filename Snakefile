@@ -14,7 +14,10 @@ os.environ["PKG_CONFIG_PATH"] = f"{pixi_env}/lib/pkgconfig:" + os.environ.get("P
 os.environ["CMAKE_PREFIX_PATH"] = f"{pixi_env}:" + os.environ.get("CMAKE_PREFIX_PATH", "")
 
 
-MRI_DATA = "/tsd/p2386/data/durable/ragnhild_workdir/glymphopt/mri_processed_data" 
+# Override with e.g. `snakemake --config mri_data=/tsd/p2386/.../mri_processed_data mri_dataset=/tsd/p2386/.../mri_dataset`
+MRI_DATA = config.get("mri_data", "mri_processed_data")
+MRI_DATASET = config.get("mri_dataset", "mri_dataset")
+PARENCHYMA_SEG = f"{MRI_DATA}/{{subject}}/segmentations/parenchyma_segmentation.nii.gz"
 
 if DeploymentMethod.APPTAINER in workflow.deployment_settings.deployment_method:
   shell.prefix(
@@ -23,7 +26,7 @@ if DeploymentMethod.APPTAINER in workflow.deployment_settings.deployment_method:
   )
 
 with open("subjects.txt", "r") as f:
-    SUBJECTS = [line.strip() for line in f.readlines()]
+    SUBJECTS = [line.strip() for line in f.readlines() if line.strip()]
 
 def get_optimal(file, key):
   import pandas as pd
@@ -31,11 +34,11 @@ def get_optimal(file, key):
   return float(dframe.loc[dframe["funceval"].idxmin()][key])
 
 def looklocker_exists(subject, session):
-  looklocker = f"mri_dataset/{subject}/{session}/anat/{subject}_{session}_acq-looklocker_IRT1.nii.gz"
+  looklocker = f"{MRI_DATASET}/{subject}/{session}/anat/{subject}_{session}_acq-looklocker_IRT1.nii.gz"
   return Path(looklocker).exists()
 
 def mixed_exists(subject, session):
-  mixed = f"mri_dataset/{subject}/{session}/mixed/{subject}_{session}_acq-mixed_SE-modulus.nii.gz"
+  mixed = f"{MRI_DATASET}/{subject}/{session}/mixed/{subject}_{session}_acq-mixed_SE-modulus.nii.gz"
   return Path(mixed).exists()
 
 def concentration_exists(subject, session):
@@ -63,9 +66,9 @@ rule all:
 ###################################
 rule extract_timestamps:
   input:
-    "mri_dataset/timetable.tsv"
+    f"{MRI_DATASET}/timetable.tsv"
   output:
-    "{MRI_DATA}/{subject}/modeling/timestamps.txt"
+    f"{MRI_DATA}/{{subject}}/modeling/timestamps.txt"
   params:
     sequence="looklocker"
   shell:
@@ -84,8 +87,8 @@ rule generate_mesh:
     ancient(f"{MRI_DATA}/{{subject}}/modeling/surfaces/ventricles_new.stl"),
     ancient(f"{MRI_DATA}/{{subject}}/modeling/surfaces/white_new.stl"),
   output:
-    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{res}/mesh-raw.hdf",
-    xdmf=f"{MRI_DATA}/{{subject}}/modeling/resolution{res}/mesh_xdmfs/subdomains.xdmf"
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh-raw.hdf",
+    xdmf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh_xdmfs/subdomains.xdmf"
   shell:
     "gmri2fem brainmeshing meshgen"
     " --surface_dir $(dirname {input[0]})"
@@ -95,9 +98,9 @@ rule generate_mesh:
 
 rule refine_mesh_boundary:
   input:
-    f"{MRI_DATA}/{{subject}}/modeling/resolution{res}/mesh-raw.hdf",
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh-raw.hdf",
   output:
-    f"{MRI_DATA}/{{subject}}/modeling/resolution{res}/mesh.hdf",
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
   params:
     cellsize=1.0,
     maxiter=1,
@@ -108,18 +111,18 @@ rule refine_mesh_boundary:
 
 rule create_evaluation_data:
   input:
-    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{res}/mesh.hdf",
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
     concentrations= lambda wc: [
       f"{MRI_DATA}/{wc.subject}/concentrations/{wc.subject}_{ses}_concentration.nii.gz"
       for ses in (f"ses-{idx:02d}" for idx in range(1, 6))
       if concentration_exists(wc.subject, ses)
     ],
-    csfmask = "{MRI_DATA}/{subject}/segmentations/{subject}_seg-csf_binary_new.nii.gz",
-    timestamps="{MRI_DATA}/{subject}/modeling/timestamps.txt",
+    csfmask = f"{MRI_DATA}/{{subject}}/segmentations/{{subject}}_seg-csf_binary_new.nii.gz",
+    timestamps=f"{MRI_DATA}/{{subject}}/modeling/timestamps.txt",
   params: 
     concentrations=lambda wc, input: " ".join(input.concentrations)
   output:
-    "{MRI_DATA}/{subject}/modeling/resolution{res}/evaluation_data.npz"
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/evaluation_data.npz"
   shell:
     "gmri2fem i2m evaluation_data"
     " {params.concentrations}"
@@ -131,23 +134,23 @@ rule create_evaluation_data:
 
 rule mesh_segmentation:
   input:
-    seg="{MRI_DATA}/fastsurfer/{subject}/mri/{seg}.mgz",
-    mesh="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh.hdf",
+    seg=PARENCHYMA_SEG,
+    mesh=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
   output:
-    "{MRI_DATA}/{subject}/modeling/resolution{res}/mesh_seg-{seg}.hdf"
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh_seg-parenchyma.hdf"
   shell:
     "gmri2fem i2m subdomains"
     " {input} {output}"
 
 rule dti2fenics:
   input:
-    meshfile="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh.hdf",
-    dti="{MRI_DATA}/{subject}/dwi/{subject}_ses-01_dDTI_cleaned.nii.gz",
-    md = "{MRI_DATA}/{subject}/registered/{subject}_ses-01_dDTI_MD_registered.nii.gz",
-    fa = "{MRI_DATA}/{subject}/registered/{subject}_ses-01_dDTI_FA_registered.nii.gz",
-    mask= "{MRI_DATA}/{subject}/segmentations/{subject}_seg-aseg_refined.nii.gz",
+    meshfile=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
+    dti=f"{MRI_DATA}/{{subject}}/dwi/{{subject}}_ses-01_dDTI_cleaned.nii.gz",
+    md = f"{MRI_DATA}/{{subject}}/registered/{{subject}}_ses-01_dDTI_MD_registered.nii.gz",
+    fa = f"{MRI_DATA}/{{subject}}/registered/{{subject}}_ses-01_dDTI_FA_registered.nii.gz",
+    mask=PARENCHYMA_SEG,
   output:
-    hdf="{MRI_DATA}/{subject}/modeling/resolution{res}/dti.hdf",
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/dti.hdf",
   shell:
     "gmri2fem i2m dti2mesh"
     " --mesh {input.meshfile}"
@@ -159,13 +162,13 @@ rule dti2fenics:
 
 rule collect:
   input:
-    mesh="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh.hdf",
-    tissue="{MRI_DATA}/{subject}/modeling/resolution{res}/tissue_concentrations.hdf",
-    boundary="{MRI_DATA}/{subject}/modeling/resolution{res}/boundary_concentrations.hdf",
-    dti="{MRI_DATA}/{subject}/modeling/resolution{res}/dti.hdf",
-    parcellations="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh_seg-wmparc.hdf"
+    mesh=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
+    tissue=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/tissue_concentrations.hdf",
+    boundary=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/boundary_concentrations.hdf",
+    dti=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/dti.hdf",
+    parcellations=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh_seg-parenchyma.hdf"
   output:
-    "{MRI_DATA}/{subject}/modeling/resolution{res}/data.hdf"
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/data.hdf"
   shell:
     "python scripts/collect_mesh_data.py"
     " --domain {input.mesh}"
@@ -178,16 +181,16 @@ rule collect:
 
 rule boundary_concentrations:
   input:
-    mesh="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh.hdf",
-    csfmask="{MRI_DATA}/{subject}/segmentations/{subject}_seg-csf_binary.nii.gz",
-    timestamps="{MRI_DATA}/{subject}/modeling/timestamps.txt",
+    mesh=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
+    csfmask=f"{MRI_DATA}/{{subject}}/segmentations/{{subject}}_seg-csf_binary_new.nii.gz",
+    timestamps=f"{MRI_DATA}/{{subject}}/modeling/timestamps.txt",
     concentrations= lambda wc: [
       f"{MRI_DATA}/{wc.subject}/concentrations/{wc.subject}_{ses}_concentration.nii.gz"
       for ses in (f"ses-{idx:02d}" for idx in range(1, 6))
       if concentration_exists(wc.subject, ses)
     ],
   output:
-    hdf="{MRI_DATA}/{subject}/modeling/resolution{res}/boundary_concentrations.hdf",
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/boundary_concentrations.hdf",
   params: 
     concentrations=lambda wc, input: " ".join(input.concentrations)
   shell:
@@ -201,10 +204,10 @@ rule boundary_concentrations:
 
 rule tissue_concentrations:
   input:
-    mesh="{MRI_DATA}/{subject}/modeling/resolution{res}/mesh.hdf",
-    eval="{MRI_DATA}/{subject}/modeling/resolution{res}/evaluation_data.npz",
+    mesh=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/mesh.hdf",
+    eval=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/evaluation_data.npz",
   output:
-    "{MRI_DATA}/{subject}/modeling/resolution{res}/tissue_concentrations.hdf",
+    f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/tissue_concentrations.hdf",
   shell:
     "gmri2fem i2m tissue-concentrations"
     " -m {input.mesh}"
@@ -217,7 +220,7 @@ rule tissue_concentrations:
 
 rule gridsearch_twocompartment:
     input:
-        "{MRI_DATA}/{subject}/modeling/resolution32/data.hdf"
+        f"{MRI_DATA}/{{subject}}/modeling/resolution32/data.hdf"
     output:
         "results/{subject}_twocomp_gridsearch.csv"
     params:
@@ -283,8 +286,8 @@ from glymphopt.param_utils import float_string_formatter
 
 rule singlecomp_converge_analysis_workflow:
   input:
-    hdf="{MRI_DATA}/{subject}/modeling/resolution{res}/data.hdf",
-    eval="{MRI_DATA}/{subject}/modeling/resolution{res}/evaluation_data.npz"
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/data.hdf",
+    eval=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/evaluation_data.npz"
   output:
     "results/singlecomp_convergence/{subject}_resolution-{res}_dt-{dt}_alpha-{alpha}_r-{r}.hdf"
   params:
@@ -302,8 +305,8 @@ rule singlecomp_converge_analysis_workflow:
 
 rule twocomp_convergence_analysis_workflow:
   input:
-    hdf="{MRI_DATA}/{subject}/modeling/resolution{res}/data.hdf",
-    eval="{MRI_DATA}/{subject}/modeling/resolution{res}/evaluation_data.npz"
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/data.hdf",
+    eval=f"{MRI_DATA}/{{subject}}/modeling/resolution{{res}}/evaluation_data.npz"
   output:
     "results/twocomp_convergence/{subject}_resolution-{res}_dt-{dt}_gamma-{gamma}_t_pb-{t_pb}.hdf"
   params:
@@ -339,9 +342,9 @@ R_BOUNDS = (0, 5e-5)
 ruleorder: define_initial_grid > refine_grid
 checkpoint define_initial_grid:
   input:
-    "{MRI_DATA}/{subject}/modeling/resolution30/data.hdf",
-    "{MRI_DATA}/{subject}/modeling/resolution30/evaluation_data.npz",
-    "{MRI_DATA}/{subject}/modeling/timestamps.txt"
+    f"{MRI_DATA}/{{subject}}/modeling/resolution30/data.hdf",
+    f"{MRI_DATA}/{{subject}}/modeling/resolution30/evaluation_data.npz",
+    f"{MRI_DATA}/{{subject}}/modeling/timestamps.txt"
   output:
     "results/singlecompartment_gridsearch/{subject}/grid0.csv"
   params:
@@ -356,7 +359,7 @@ checkpoint define_initial_grid:
 
 rule gridsearch_singlecompartment:
     input:
-        "{MRI_DATA}/{subject}/modeling/resolution32/data.hdf"
+        f"{MRI_DATA}/{{subject}}/modeling/resolution32/data.hdf"
     output:
         "results/{subject}_singlecomp_gridsearch.csv"
     shell:
@@ -366,8 +369,8 @@ rule gridsearch_singlecompartment:
 
 rule singlecompartment_point_evaluation:
   input:
-    hdf="{MRI_DATA}/{subject}/modeling/resolution30/data.hdf",
-    eval="{MRI_DATA}/{subject}/modeling/resolution30/evaluation_data.npz"
+    hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution30/data.hdf",
+    eval=f"{MRI_DATA}/{{subject}}/modeling/resolution30/evaluation_data.npz"
   output:
     "results/singlecompartment_gridsearch/{subject}/alpha{alpha}_r{r}_error.json"
   params:
@@ -464,7 +467,7 @@ rule twocompartment_point_evaluation:
     hdf=f"{MRI_DATA}/{{subject}}/modeling/resolution30/data.hdf",
     eval=f"{MRI_DATA}/{{subject}}/modeling/resolution30/evaluation_data.npz"
   output:
-    "results/twocompartment_gridsearch/{{subject}}/gamma{gamma}_t_pb{t_pb}_error.json"
+    "results/twocompartment_gridsearch/{subject}/gamma{gamma}_t_pb{t_pb}_error.json"
   params:
     gamma = lambda wc: float(wc.gamma),
     t_pb = lambda wc: float(wc.t_pb)
@@ -513,7 +516,7 @@ checkpoint refine_grid_twocompartment:
 
 rule collect_grid_twocompartment:
   input:
-    grid=f"results/twocompartment_gridsearch/{{subject}}/grid{iter}.csv",
+    grid="results/twocompartment_gridsearch/{subject}/grid{iter}.csv",
     history=lambda wc: f"results/twocompartment_gridsearch/{wc.subject}/history{int(wc.iter)-1}.csv",
     sim_results = lambda wc: [f"results/twocompartment_gridsearch/{wc.subject}/{file}"
       for file in read_grid(f"results/twocompartment_gridsearch/{wc.subject}/grid{wc.iter}.csv")
